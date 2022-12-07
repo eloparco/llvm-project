@@ -841,6 +841,8 @@ public:
 
   lldb::addr_t GetStackRedZoneSize();
 
+  uint32_t GetMaximumOpcodeByteSize() const;
+
   bool IsLoaded(const lldb::SBModule &module) const;
 
   lldb::SBLaunchInfo GetLaunchInfo() const;

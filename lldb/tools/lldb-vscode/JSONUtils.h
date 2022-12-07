@@ -349,6 +349,8 @@ llvm::json::Value CreateSource(lldb::SBFrame &frame, int64_t &disasm_line);
 ///   "source" - source file information as a "Source" VSCode object
 ///   "line" - the source file line number as an integer
 ///   "column" - the source file column number as an integer
+///   "instructionPointerReference" - a memory reference for the current
+///                                   instruction pointer in this frame
 ///
 /// \param[in] frame
 ///     The LLDB stack frame to use when populating out the "StackFrame"
@@ -462,6 +464,24 @@ std::string CreateUniqueVariableNameForDisplay(lldb::SBValue v,
 llvm::json::Value CreateVariable(lldb::SBValue v, int64_t variablesReference,
                                  int64_t varID, bool format_hex,
                                  bool is_name_duplicated = false);
+
+/// Create a "DisassembledInstruction" object for a LLDB disassembled
+/// instruction object.
+///
+/// This function will fill in the following keys in the returned
+/// object:
+///   "address" - the address of the instruction
+///   "instruction" - the text representing the instruction and its operands
+///
+/// \param[in] instruction
+///     The LLDB disassembled instruction to use when populating out the
+///     "DisassembledInstruction" object.
+///
+/// \return
+///     A "DisassembledInstruction" JSON object with that follows the formal
+///     JSON definition outlined by Microsoft.
+llvm::json::Value
+CreateDisassembledInstruction(DisassembledInstruction instruction);
 
 llvm::json::Value CreateCompileUnit(lldb::SBCompileUnit unit);
 

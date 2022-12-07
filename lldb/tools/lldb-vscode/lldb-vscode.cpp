@@ -102,6 +102,8 @@ typedef void (*RequestCallback)(const llvm::json::Object &command);
 
 enum LaunchMethod { Launch, Attach, AttachForSuspendedLaunch };
 
+lldb::SBFrame g_curr_frame;
+
 lldb::SBValueList *GetTopLevelScope(int64_t variablesReference) {
   switch (variablesReference) {
   case VARREF_LOCALS:
@@ -1451,8 +1453,7 @@ void request_initialize(const llvm::json::Object &request) {
   // which may affect the outcome of tests.
   bool source_init_file = GetBoolean(arguments, "sourceInitFile", true);
 
-  g_vsc.debugger =
-      lldb::SBDebugger::Create(source_init_file, log_cb, nullptr);
+  g_vsc.debugger = lldb::SBDebugger::Create(source_init_file, log_cb, nullptr);
   g_vsc.progress_event_thread = std::thread(ProgressEventThreadFunction);
 
   // Start our event thread so we can receive events from the debugger, target,
@@ -1541,6 +1542,8 @@ void request_initialize(const llvm::json::Object &request) {
   body.try_emplace("supportsProgressReporting", true);
   // The debug adapter supports 'logMessage' in breakpoint.
   body.try_emplace("supportsLogPoints", true);
+
+  body.try_emplace("supportsDisassembleRequest", true);
 
   response.try_emplace("body", std::move(body));
   g_vsc.SendJSON(llvm::json::Value(std::move(response)));
@@ -2117,6 +2120,191 @@ void request_setBreakpoints(const llvm::json::Object &request) {
   g_vsc.SendJSON(llvm::json::Value(std::move(response)));
 }
 
+std::vector<lldb::SBInstruction>
+_get_instructions_from_memory(lldb::addr_t start, uint64_t count,
+                              lldb::addr_t end) {
+  lldb::SBProcess process = g_vsc.target.GetProcess();
+
+  lldb::SBError error;
+  std::vector<uint8_t> buffer(count, 0);
+  const size_t bytes_read __attribute__((unused)) = process.ReadMemory(
+      start, static_cast<void *>(buffer.data()), count, error);
+  assert(bytes_read == count && error.Success() &&
+         "unable to read byte range from memory");
+
+  // If base_addr starts in the middle of an instruction,
+  // that first instruction will not be parsed correctly (negligible)
+  std::vector<lldb::SBInstruction> sb_instructions;
+  const auto base_addr = lldb::SBAddress(start, g_vsc.target);
+  lldb::SBInstructionList instructions =
+      g_vsc.target.GetInstructions(base_addr, buffer.data(), count);
+
+  for (size_t i = 0; i < instructions.GetSize(); i++) {
+    auto instr = instructions.GetInstructionAtIndex(i);
+    if (instr.GetAddress().GetLoadAddress(g_vsc.target) > end)
+      break;
+
+    sb_instructions.emplace_back(instr);
+  }
+  return sb_instructions;
+}
+
+std::pair<lldb::addr_t, lldb::addr_t> _get_frame_boundary() {
+  assert(g_curr_frame.IsValid());
+  auto function = g_curr_frame.GetFunction();
+
+  if (!function.IsValid())
+    return std::make_pair<>(LLDB_INVALID_ADDRESS, LLDB_INVALID_ADDRESS);
+
+  return std::make_pair<>(
+      function.GetStartAddress().GetLoadAddress(g_vsc.target),
+      function.GetEndAddress().GetLoadAddress(g_vsc.target));
+}
+
+auto _handle_disassemble_positive_offset(lldb::addr_t base_addr,
+                                         int64_t instruction_offset,
+                                         uint64_t instruction_count) {
+  llvm::json::Array response_instructions;
+
+  auto start_addr = lldb::SBAddress(base_addr, g_vsc.target);
+  lldb::SBInstructionList instructions = g_vsc.target.ReadInstructions(
+      start_addr, instruction_offset + instruction_count);
+
+  std::vector<DisassembledInstruction> dis_instructions;
+  const auto num_instrs_to_skip = static_cast<size_t>(instruction_offset);
+  for (size_t i = num_instrs_to_skip; i < instructions.GetSize(); ++i) {
+    lldb::SBInstruction instr = instructions.GetInstructionAtIndex(i);
+
+    auto disass_instr =
+        CreateDisassembledInstruction(DisassembledInstruction(instr));
+    response_instructions.emplace_back(std::move(disass_instr));
+  }
+
+  return response_instructions;
+}
+
+auto _handle_disassemble_negative_offset(
+    lldb::addr_t base_addr, int64_t instruction_offset,
+    uint64_t instruction_count,
+    std::optional<llvm::StringRef> memory_reference) {
+  llvm::json::Array response_instructions;
+
+  const auto bytes_per_instruction = g_vsc.target.GetMaximumOpcodeByteSize();
+  const auto bytes_offset = -instruction_offset * bytes_per_instruction;
+  auto start_addr = base_addr - bytes_offset;
+  const auto disassemble_bytes = instruction_count * bytes_per_instruction;
+
+  // Get beginning of current stack frame to avoid reading outside of it
+  const auto frame_boundaries = _get_frame_boundary();
+  const auto low_pc = frame_boundaries.first;
+  const auto high_pc = frame_boundaries.second;
+  if (low_pc == LLDB_INVALID_ADDRESS)
+    return response_instructions;
+  if (start_addr < low_pc)
+    start_addr = low_pc;
+
+  auto sb_instructions =
+      _get_instructions_from_memory(start_addr, disassemble_bytes, high_pc);
+
+  // Find position of requested instruction
+  // in retrieved disassembled instructions
+  auto index = sb_instructions.size() + 1;
+  for (size_t i = 0; i < sb_instructions.size(); i++) {
+    if (sb_instructions[i].GetAddress().GetLoadAddress(g_vsc.target) ==
+        hex_string_to_addr(memory_reference)) {
+      index = i;
+      break;
+    }
+  }
+  if (index == sb_instructions.size() + 1) {
+    fprintf(stderr, "current line not found in disassembled instructions\n");
+    return response_instructions;
+  }
+
+  // Copy instructions into queue to easily manipulate them
+  std::deque<DisassembledInstruction> disass_instructions;
+  for (auto &instr : sb_instructions)
+    disass_instructions.emplace_back(DisassembledInstruction(instr));
+
+  // Make sure the address in the disassemble request is at the right position
+  const uint64_t expected_index = -instruction_offset;
+  if (index < expected_index) {
+    for (uint64_t i = 0; i < (expected_index - index); i++) {
+      DisassembledInstruction nop_instruction;
+      disass_instructions.emplace_front(nop_instruction);
+    }
+  } else if (index > expected_index) {
+    const auto num_instr_to_remove = index - expected_index;
+    disass_instructions.erase(disass_instructions.begin(),
+                              disass_instructions.begin() +
+                                  num_instr_to_remove);
+  }
+
+  // Truncate if too many instructions
+  if (disass_instructions.size() > instruction_count) {
+    disass_instructions.erase(disass_instructions.begin() + instruction_count,
+                              disass_instructions.end());
+  }
+
+  assert(disass_instructions.size() > expected_index &&
+         disass_instructions[expected_index].m_address ==
+             memory_reference.value());
+
+  for (auto &instr : disass_instructions)
+    response_instructions.emplace_back(CreateDisassembledInstruction(instr));
+  return response_instructions;
+}
+
+void request_disassemble(const llvm::json::Object &request) {
+  llvm::json::Object response;
+  lldb::SBError error;
+  FillResponse(request, response);
+  auto arguments = request.getObject("arguments");
+  const auto memory_reference = arguments->getString("memoryReference");
+  const auto instruction_offset = GetSigned(arguments, "instructionOffset", 0);
+  const auto instruction_count = GetUnsigned(arguments, "instructionCount", 0);
+  llvm::json::Array response_instructions;
+
+  auto base_addr = hex_string_to_addr(memory_reference);
+  base_addr += instruction_offset;
+
+  fprintf(stdout, "disassemble -> pc=%s off=%lld count=%llu\n",
+          memory_reference->data(), instruction_offset, instruction_count);
+
+  bool success = true;
+  if (hex_string_to_addr(memory_reference) == 0) {
+    success = false;
+    fprintf(stderr, "requested memory reference is nop\n");
+  } else {
+    response_instructions =
+        instruction_offset >= 0
+            ? _handle_disassemble_positive_offset(base_addr, instruction_offset,
+                                                  instruction_count)
+            : _handle_disassemble_negative_offset(base_addr, instruction_offset,
+                                                  instruction_count,
+                                                  memory_reference);
+  }
+
+  // Add padding if not enough instructions
+  if (response_instructions.size() < instruction_count) {
+    const auto padding_len = instruction_count - response_instructions.size();
+    for (size_t i = 0; i < padding_len; i++) {
+      const DisassembledInstruction nop_instruction;
+      auto disass_instr = CreateDisassembledInstruction(nop_instruction);
+      response_instructions.emplace_back(std::move(disass_instr));
+    }
+  }
+
+  assert((response_instructions.size() == instruction_count) &&
+         "should return exact number of requested instructions");
+
+  llvm::json::Object body;
+  body.try_emplace("instructions", std::move(response_instructions));
+  response.try_emplace("body", std::move(body));
+  response["success"] = llvm::json::Value(success);
+  g_vsc.SendJSON(llvm::json::Value(std::move(response)));
+}
+
 // "SetExceptionBreakpointsRequest": {
 //   "allOf": [ { "$ref": "#/definitions/Request" }, {
 //     "type": "object",
@@ -2491,6 +2679,10 @@ void request_stackTrace(const llvm::json::Object &request) {
       auto frame = thread.GetFrameAtIndex(i);
       if (!frame.IsValid())
         break;
+
+      if (i == 0) // Current stack frame
+        g_curr_frame = frame;
+
       stackFrames.emplace_back(CreateStackFrame(frame));
     }
     const auto totalFrames = thread.GetNumFrames();
@@ -3085,6 +3277,7 @@ void RegisterRequestCallbacks() {
   g_vsc.RegisterRequestCallback("stepOut", request_stepOut);
   g_vsc.RegisterRequestCallback("threads", request_threads);
   g_vsc.RegisterRequestCallback("variables", request_variables);
+  g_vsc.RegisterRequestCallback("disassemble", request_disassemble);
   // Custom requests
   g_vsc.RegisterRequestCallback("compileUnits", request_compileUnits);
   g_vsc.RegisterRequestCallback("modules", request_modules);

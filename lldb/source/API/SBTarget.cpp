@@ -1965,6 +1965,16 @@ lldb::SBInstructionList SBTarget::ReadInstructions(lldb::SBAddress base_addr,
   return sb_instructions;
 }
 
+uint32_t SBTarget::GetMaximumOpcodeByteSize() const {
+  LLDB_INSTRUMENT_VA(this);
+
+  TargetSP target_sp(GetSP());
+  if (target_sp) 
+    return target_sp->GetArchitecture().GetMaximumOpcodeByteSize();
+    
+  return 0;
+}
+
 lldb::SBInstructionList SBTarget::GetInstructions(lldb::SBAddress base_addr,
                                                   const void *buf,
                                                   size_t size) {

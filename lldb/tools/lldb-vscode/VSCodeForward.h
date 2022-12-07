@@ -15,6 +15,7 @@ struct ExceptionBreakpoint;
 struct FunctionBreakpoint;
 struct SourceBreakpoint;
 struct SourceReference;
+struct DisassembledInstruction;
 } // namespace lldb_vscode
 
 namespace lldb {

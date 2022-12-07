@@ -25,6 +25,7 @@ add_public_tablegen_target(LLDBVSCodeOptionsTableGen)
 add_lldb_tool(lldb-vscode
   lldb-vscode.cpp
   BreakpointBase.cpp
+  DisassembledInstruction.cpp
   ExceptionBreakpoint.cpp
   FifoFiles.cpp
   FunctionBreakpoint.cpp
