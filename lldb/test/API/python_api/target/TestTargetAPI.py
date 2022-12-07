@@ -525,3 +525,14 @@ class TargetAPITestCase(TestBase):
             module = target.GetModuleAtIndex(i)
             self.assertTrue(target.IsLoaded(module), "Running the target should "
                             "have loaded its modules.")
+
+    def test_get_max_opcode_byte_size(self):
+        """Exercise SBTarget.GetMaximumOpcodeByteSize() API."""
+
+        d = {'EXE': 'b.out'}
+        self.build(dictionary=d)
+        self.setTearDownCleanup(dictionary=d)
+        target = self.create_simple_target('b.out')
+
+        maxOpcodeByteSize = target.GetMaximumOpcodeByteSize()
+        self.assertTrue(maxOpcodeByteSize > 0 and maxOpcodeByteSize < 16)

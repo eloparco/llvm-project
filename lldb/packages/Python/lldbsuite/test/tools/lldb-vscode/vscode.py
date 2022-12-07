@@ -957,6 +957,19 @@ class DebugCommunication(object):
         }
         return self.send_recv(command_dict)
 
+    def request_disassemble(self, memoryReference, instructionOffset, instructionCount):
+        args_dict = {
+            'memoryReference': memoryReference,
+            'instructionOffset': instructionOffset,
+            'instructionCount': instructionCount,
+        }
+        command_dict = {
+            'command': 'disassemble',
+            'type': 'request',
+            'arguments': args_dict
+        }
+        return self.send_recv(command_dict)
+
     def terminate(self):
         self.send.close()
         # self.recv.close()

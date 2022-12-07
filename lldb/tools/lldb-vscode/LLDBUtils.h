@@ -10,6 +10,7 @@
 #define LLDB_TOOLS_LLDB_VSCODE_LLDBUTILS_H
 
 #include "VSCodeForward.h"
+#include "lldb/lldb-types.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
@@ -105,6 +106,27 @@ uint32_t GetLLDBThreadIndexID(uint64_t dap_frame_id);
 /// \return
 ///     The LLDB frame index ID.
 uint32_t GetLLDBFrameID(uint64_t dap_frame_id);
+
+/// Given an address, convert it to its hexadecimal representation.
+///
+/// \param[in] address
+///     The address to convert.
+///
+/// \return
+///     The hexadecimal representation of the address.
+std::string addr_to_hex_string(const lldb::addr_t address);
+
+/// Given an hexadecimal representation of an address, convert it to a number.
+///
+/// Reverse of `addr_to_hex_string()`.
+///
+/// \param[in] hex_address
+///     The hexadecimal address to convert.
+///
+/// \return
+///     The decimal representation of the hex address.
+lldb::addr_t
+hex_string_to_addr(const std::optional<llvm::StringRef> hex_address);
 
 } // namespace lldb_vscode
 

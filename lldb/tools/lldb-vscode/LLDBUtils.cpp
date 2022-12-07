@@ -83,4 +83,13 @@ int64_t MakeVSCodeFrameID(lldb::SBFrame &frame) {
                    frame.GetFrameID());
 }
 
+std::string addr_to_hex_string(const lldb::addr_t address) {
+  return "0x" + llvm::utohexstr(address, true);
+}
+
+lldb::addr_t
+hex_string_to_addr(const std::optional<llvm::StringRef> hex_address) {
+  return std::stoull(hex_address->data(), nullptr, 16);
+}
+
 } // namespace lldb_vscode

@@ -46,6 +46,7 @@
 #include "lldb/API/SBTarget.h"
 #include "lldb/API/SBThread.h"
 
+#include "DisassembledInstruction.h"
 #include "ExceptionBreakpoint.h"
 #include "FunctionBreakpoint.h"
 #include "IOStream.h"

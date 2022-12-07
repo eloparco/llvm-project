@@ -782,6 +782,9 @@ llvm::json::Value CreateStackFrame(lldb::SBFrame &frame) {
     object.try_emplace("line", line);
   }
   object.try_emplace("column", line_entry.GetColumn());
+
+  auto pc = addr_to_hex_string(frame.GetPC());
+  object.try_emplace("instructionPointerReference", pc);
   return llvm::json::Value(std::move(object));
 }
 
@@ -1094,6 +1097,14 @@ llvm::json::Value CreateCompileUnit(lldb::SBCompileUnit unit) {
   unit.GetFileSpec().GetPath(unit_path_arr, sizeof(unit_path_arr));
   std::string unit_path(unit_path_arr);
   object.try_emplace("compileUnitPath", unit_path);
+  return llvm::json::Value(std::move(object));
+}
+
+llvm::json::Value
+CreateDisassembledInstruction(DisassembledInstruction instruction) {
+  llvm::json::Object object;
+  EmplaceSafeString(object, "address", instruction.m_address);
+  EmplaceSafeString(object, "instruction", instruction.m_instruction);
   return llvm::json::Value(std::move(object));
 }
 
