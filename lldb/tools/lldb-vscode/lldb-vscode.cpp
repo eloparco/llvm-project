@@ -102,8 +102,6 @@ typedef void (*RequestCallback)(const llvm::json::Object &command);
 
 enum LaunchMethod { Launch, Attach, AttachForSuspendedLaunch };
 
-lldb::SBFrame g_curr_frame;
-
 lldb::SBValueList *GetTopLevelScope(int64_t variablesReference) {
   switch (variablesReference) {
   case VARREF_LOCALS:
@@ -2121,8 +2119,7 @@ void request_setBreakpoints(const llvm::json::Object &request) {
 }
 
 std::vector<lldb::SBInstruction>
-_get_instructions_from_memory(lldb::addr_t start, uint64_t count,
-                              lldb::addr_t end) {
+_get_instructions_from_memory(lldb::addr_t start, uint64_t count) {
   lldb::SBProcess process = g_vsc.target.GetProcess();
 
   lldb::SBError error;
@@ -2141,24 +2138,9 @@ _get_instructions_from_memory(lldb::addr_t start, uint64_t count,
 
   for (size_t i = 0; i < instructions.GetSize(); i++) {
     auto instr = instructions.GetInstructionAtIndex(i);
-    if (instr.GetAddress().GetLoadAddress(g_vsc.target) > end)
-      break;
-
     sb_instructions.emplace_back(instr);
   }
   return sb_instructions;
-}
-
-std::pair<lldb::addr_t, lldb::addr_t> _get_frame_boundary() {
-  assert(g_curr_frame.IsValid());
-  auto function = g_curr_frame.GetFunction();
-
-  if (!function.IsValid())
-    return std::make_pair<>(LLDB_INVALID_ADDRESS, LLDB_INVALID_ADDRESS);
-
-  return std::make_pair<>(
-      function.GetStartAddress().GetLoadAddress(g_vsc.target),
-      function.GetEndAddress().GetLoadAddress(g_vsc.target));
 }
 
 auto _handle_disassemble_positive_offset(lldb::addr_t base_addr,
@@ -2166,7 +2148,8 @@ auto _handle_disassemble_positive_offset(lldb::addr_t base_addr,
                                          uint64_t instruction_count) {
   llvm::json::Array response_instructions;
 
-  auto start_addr = lldb::SBAddress(base_addr, g_vsc.target);
+  auto start_addr =
+      lldb::SBAddress(base_addr + instruction_offset, g_vsc.target);
   lldb::SBInstructionList instructions = g_vsc.target.ReadInstructions(
       start_addr, instruction_offset + instruction_count);
 
@@ -2194,24 +2177,15 @@ auto _handle_disassemble_negative_offset(
   auto start_addr = base_addr - bytes_offset;
   const auto disassemble_bytes = instruction_count * bytes_per_instruction;
 
-  // Get beginning of current stack frame to avoid reading outside of it
-  const auto frame_boundaries = _get_frame_boundary();
-  const auto low_pc = frame_boundaries.first;
-  const auto high_pc = frame_boundaries.second;
-  if (low_pc == LLDB_INVALID_ADDRESS)
-    return response_instructions;
-  if (start_addr < low_pc)
-    start_addr = low_pc;
-
   auto sb_instructions =
-      _get_instructions_from_memory(start_addr, disassemble_bytes, high_pc);
+      _get_instructions_from_memory(start_addr, disassemble_bytes);
 
   // Find position of requested instruction
   // in retrieved disassembled instructions
   auto index = sb_instructions.size() + 1;
   for (size_t i = 0; i < sb_instructions.size(); i++) {
     if (sb_instructions[i].GetAddress().GetLoadAddress(g_vsc.target) ==
-        hex_string_to_addr(memory_reference)) {
+        base_addr) {
       index = i;
       break;
     }
@@ -2265,16 +2239,11 @@ void request_disassemble(const llvm::json::Object &request) {
   const auto instruction_count = GetUnsigned(arguments, "instructionCount", 0);
   llvm::json::Array response_instructions;
 
-  auto base_addr = hex_string_to_addr(memory_reference);
-  base_addr += instruction_offset;
-
-  fprintf(stdout, "disassemble -> pc=%s off=%lld count=%llu\n",
-          memory_reference->data(), instruction_offset, instruction_count);
-
   bool success = true;
+  auto base_addr = hex_string_to_addr(memory_reference);
   if (hex_string_to_addr(memory_reference) == 0) {
     success = false;
-    fprintf(stderr, "requested memory reference is nop\n");
+    llvm::errs() << "requested memory reference is nop\n";
   } else {
     response_instructions =
         instruction_offset >= 0
@@ -2679,9 +2648,6 @@ void request_stackTrace(const llvm::json::Object &request) {
       auto frame = thread.GetFrameAtIndex(i);
       if (!frame.IsValid())
         break;
-
-      if (i == 0) // Current stack frame
-        g_curr_frame = frame;
 
       stackFrames.emplace_back(CreateStackFrame(frame));
     }

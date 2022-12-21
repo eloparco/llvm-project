@@ -7,7 +7,7 @@
 namespace lldb_vscode {
 
 DisassembledInstruction::DisassembledInstruction()
-    : m_address("0x0000000000000000"), m_instruction("   <invalid>") {}
+    : m_address("0x0000000000000000"), m_instruction("<invalid>") {}
 
 DisassembledInstruction::DisassembledInstruction(lldb::SBInstruction &inst) {
   const auto inst_addr = inst.GetAddress().GetLoadAddress(g_vsc.target);
